@@ -50,14 +50,6 @@ class SensorMonitor:
         self.humidity_data = deque(maxlen=self.max_points)
         self.altitude_data = deque(maxlen=self.max_points)
         
-        # Min/max values for each sensor
-        self.ranges = {
-            'temperature': {'min': float('inf'), 'max': float('-inf')},
-            'pressure': {'min': float('inf'), 'max': float('-inf')},
-            'humidity': {'min': float('inf'), 'max': float('-inf')},
-            'altitude': {'min': float('inf'), 'max': float('-inf')}
-        }
-        
         # Setup plot with 4 subplots
         self.setup_plot()
         
@@ -76,46 +68,37 @@ class SensorMonitor:
             return None
             
     def update_data_ranges(self):
-        """Update the min/max ranges for each sensor type with nice round boundaries"""
+        """Update the y-axis limits based on 10% padding around the current data range."""
         axes = [self.ax_temp, self.ax_press, self.ax_humid, self.ax_alt]
         formatters = [format_temp_humid, format_pressure, format_temp_humid, format_altitude]
         data_sets = [self.temperature_data, self.pressure_data, self.humidity_data, self.altitude_data]
-        keys = ['temperature', 'pressure', 'humidity', 'altitude']
+        keys = ['temperature', 'pressure', 'humidity', 'altitude'] # Keep keys for tick logic
         
         for i, (ax, data, key, formatter) in enumerate(zip(axes, data_sets, keys, formatters)):
             if data:
-                # Update min/max values
+                # Calculate min/max from current data in the deque
                 current_min = min(data)
                 current_max = max(data)
-                self.ranges[key]['min'] = min(current_min, self.ranges[key]['min'])
-                self.ranges[key]['max'] = max(current_max, self.ranges[key]['max'])
                 
-                # Calculate nice round boundaries for y-axis
-                data_range = self.ranges[key]['max'] - self.ranges[key]['min']
-                if data_range == 0: # Handle case where all data points are the same
-                     min_val = self.ranges[key]['min'] - 1
-                     max_val = self.ranges[key]['max'] + 1
+                # Calculate range and buffer (10%)
+                data_range = current_max - current_min
+                
+                if data_range < 1e-6: # Handle case where range is zero or very small
+                    # Add a small absolute buffer based on typical scale
+                    if key == 'temperature' or key == 'humidity': buffer = 0.5 
+                    elif key == 'pressure': buffer = 50
+                    else: buffer = 5 # altitude
+                    min_val = current_min - buffer
+                    max_val = current_max + buffer
                 else:
-                    # Round min down and max up to appropriate precision
-                    if key == 'temperature' or key == 'humidity':
-                        min_val = np.floor(self.ranges[key]['min'] * 2) / 2 - 0.5 # Add small buffer
-                        max_val = np.ceil(self.ranges[key]['max'] * 2) / 2 + 0.5 # Add small buffer
-                    elif key == 'pressure':
-                        step = 100
-                        min_val = np.floor(self.ranges[key]['min'] / step) * step - step
-                        max_val = np.ceil(self.ranges[key]['max'] / step) * step + step
-                    else:  # altitude
-                        step = 10
-                        min_val = np.floor(self.ranges[key]['min'] / step) * step - step
-                        max_val = np.ceil(self.ranges[key]['max'] / step) * step + step
-                    
-                    # Add a small margin if min and max are still identical after rounding
-                    if abs(max_val - min_val) < 1e-6:
-                        min_val -= 1
-                        max_val += 1
-                        
-                # Update y-axis limits and ticks
+                    buffer = data_range * 0.10 # 10% buffer
+                    min_val = current_min - buffer
+                    max_val = current_max + buffer
+
+                # Update y-axis limits
                 ax.set_ylim(min_val, max_val)
+                
+                # --- Tick logic remains the same, adapting to the new tighter limits --- 
                 tick_range = max_val - min_val
                 num_ticks = 5 # Aim for around 5 major ticks
                 
@@ -138,6 +121,7 @@ class SensorMonitor:
                 ax.yaxis.set_major_locator(plt.MultipleLocator(major_step))
                 ax.yaxis.set_minor_locator(plt.MultipleLocator(minor_step))
                 ax.yaxis.set_major_formatter(FuncFormatter(formatter))
+                # --- End of Tick logic --- 
     
     def setup_plot(self):
         """Set up the plot with 4 subplots"""
