@@ -33,9 +33,10 @@ class SensorMonitor:
         self.max_points = max_points
         self.time_window_minutes = time_window_minutes
         self.time_window_seconds = time_window_minutes * 60
+        self.start_time = None # Will store the absolute start time
         
         # Initialize data storage
-        self.timestamps = deque(maxlen=max_points)
+        self.timestamps = deque(maxlen=max_points) # Will store datetime objects
         self.temperature_data = deque(maxlen=max_points)
         self.pressure_data = deque(maxlen=max_points)
         self.humidity_data = deque(maxlen=max_points)
@@ -136,26 +137,26 @@ class SensorMonitor:
         
         # Create 4 subplots, sharing the x-axis
         self.fig, axs = plt.subplots(4, 1, sharex=True, figsize=(12, 10))
-        self.ax_temp, self.ax_press, self.ax_humid, self.ax_alt = axs # Unpack axes
+        self.ax_temp, self.ax_press, self.ax_humid, self.ax_alt = axs
         
-        # Disable offset for all axes to ensure absolute values are shown
+        # Disable offset and set grid for all axes
         for ax in axs:
-            ax.ticklabel_format(useOffset=False, style='plain') # Use plain style
+            ax.ticklabel_format(useOffset=False, style='plain')
             ax.grid(True, linestyle='--', alpha=0.7)
 
-        # Set colors (optional, but can be nice)
+        # Set colors
         self.temp_color = 'red'
         self.press_color = 'blue' 
         self.humid_color = 'green'
         self.alt_color = 'purple'
         
-        # Create empty line objects on their respective axes
+        # Create empty line objects
         self.temp_line, = self.ax_temp.plot([], [], color=self.temp_color)
         self.press_line, = self.ax_press.plot([], [], color=self.press_color)
         self.humid_line, = self.ax_humid.plot([], [], color=self.humid_color)
         self.alt_line, = self.ax_alt.plot([], [], color=self.alt_color)
         
-        # Set titles and labels for each subplot
+        # Set titles and labels
         self.ax_temp.set_title('Temperature')
         self.ax_temp.set_ylabel('Temp (°F)')
         self.ax_press.set_title('Barometric Pressure')
@@ -165,49 +166,41 @@ class SensorMonitor:
         self.ax_alt.set_title('Altitude')
         self.ax_alt.set_ylabel('Altitude (ft)')
         
-        # Only the bottom plot needs the x-axis label
+        # Initially set bottom x-axis label (will be updated)
         self.ax_alt.set_xlabel('Time')
         
+        # Use AutoDateLocator and ConciseDateFormatter for the shared x-axis
+        locator = mdates.AutoDateLocator(minticks=3, maxticks=7)
+        formatter = mdates.ConciseDateFormatter(locator)
+        self.ax_alt.xaxis.set_major_locator(locator)
+        self.ax_alt.xaxis.set_major_formatter(formatter)
+
         # Add main title
         self.fig.suptitle('Real-time Sensor Data from Pico', fontsize=16, y=0.98)
         
         plt.tight_layout()
-        # Adjust layout to prevent titles overlapping
         self.fig.subplots_adjust(top=0.92, hspace=0.4)
         
-    def format_x_axis(self, x_data):
-        """Format x-axis based on the time range"""
-        max_time = x_data[-1] if len(x_data) > 0 else 0
-        
-        # Set the time display window (either elapsed time or fixed window)
-        x_max = max(max_time + 30, self.time_window_seconds)
-        # Set xlim only on one axis (since they are shared)
-        self.ax_temp.set_xlim(0, x_max)
-        
-        # Get the bottom axis for formatting
-        bottom_ax = self.ax_alt
-        
-        # Format x-axis ticks based on the range
-        if x_max <= 600:  # Less than 10 minutes
-            bottom_ax.xaxis.set_major_locator(plt.MultipleLocator(60))
-            bottom_ax.xaxis.set_minor_locator(plt.MultipleLocator(15))
-            bottom_ax.set_xlabel('Time (seconds)')
-        elif x_max <= 7200:  # Less than 2 hours
-            bottom_ax.xaxis.set_major_locator(plt.MultipleLocator(600))
-            bottom_ax.xaxis.set_minor_locator(plt.MultipleLocator(60))
-            bottom_ax.set_xlabel('Time (minutes)')
-        else:  # More than 2 hours
-            bottom_ax.xaxis.set_major_locator(plt.MultipleLocator(3600))
-            bottom_ax.xaxis.set_minor_locator(plt.MultipleLocator(600))
-            bottom_ax.set_xlabel('Time (hours)')
+    def format_x_axis(self):
+        """Format x-axis based on the current time range and window"""
+        if not self.timestamps:
+            return
             
-        # Add custom formatter to show time in appropriate units
-        def format_time(x, pos):
-            if x_max <= 600: return f"{int(x)}s"
-            elif x_max <= 7200: return f"{int(x/60)}m"
-            else: return f"{int(x/3600)}h"
-                
-        bottom_ax.xaxis.set_major_formatter(plt.FuncFormatter(format_time))
+        # Get the latest timestamp
+        end_time = self.timestamps[-1]
+        
+        # Calculate the start time for the desired window
+        start_time = end_time - timedelta(seconds=self.time_window_seconds)
+        
+        # Set xlim only on one axis (since they are shared)
+        self.ax_temp.set_xlim(start_time, end_time)
+        
+        # Update the bottom axis label with the session start time
+        start_label = self.start_time.strftime("%Y%m%d_%H%M%S") if self.start_time else "N/A"
+        self.ax_alt.set_xlabel(f'Time -- Started at {start_label}')
+        
+        # The locator and formatter handle adapting to the scale automatically
+        # No need to manually change locators/formatters here
         
     def update_plot(self, frame):
         """Update function for animation"""
@@ -215,6 +208,10 @@ class SensorMonitor:
         data = self.fetch_sensor_data()
         if data:
             current_time = datetime.now()
+            # Store the absolute start time on first data point
+            if not self.start_time:
+                self.start_time = current_time
+                
             self.timestamps.append(current_time)
             
             # Extract sensor values
@@ -226,18 +223,19 @@ class SensorMonitor:
             # Update the data ranges and y-axis limits/ticks/labels
             self.update_data_ranges()
             
-            # Update the plot data
-            x_data = np.array([(t - self.timestamps[0]).total_seconds() for t in self.timestamps])
-            if not len(x_data): # Skip if no data yet
+            # Convert timestamps deque to list for plotting
+            x_data = list(self.timestamps)
+            if not x_data: # Skip if no data yet
                 return self.temp_line, self.press_line, self.humid_line, self.alt_line
             
+            # Update the plot data using datetime objects for x-axis
             self.temp_line.set_data(x_data, np.array(self.temperature_data))
             self.press_line.set_data(x_data, np.array(self.pressure_data))
             self.humid_line.set_data(x_data, np.array(self.humidity_data))
             self.alt_line.set_data(x_data, np.array(self.altitude_data))
             
-            # Format x-axis based on time range
-            self.format_x_axis(x_data)
+            # Format x-axis based on current time range and window
+            self.format_x_axis()
             
             # Update the main title with the last reading
             reading_title = (f'Temp: {self.temperature_data[-1]:.1f}°F, '
