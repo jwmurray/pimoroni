@@ -283,6 +283,7 @@ class SensorMonitor:
         return self.temp_line, self.press_line, self.humid_line, self.alt_line
 
     def fetch_and_plot_historic_data(self):
+        """Fetches all historic data, plots it, and returns True on success."""
         """Fetches all historic data and plots it statically."""
         print(f"Fetching historic data from {self.historic_endpoint}...")
         try:
@@ -292,12 +293,12 @@ class SensorMonitor:
 
             if not isinstance(historic_raw, list):
                 print(f"Error: Expected a list from historic endpoint, got {type(historic_raw)}")
-                return
+                return False # Indicate failure
 
             print(f"Received {len(historic_raw)} historic data points.")
             if not historic_raw:
                 print("No historic data received.")
-                return
+                return False # Indicate nothing loaded
 
             # Clear any existing live data
             self.timestamps.clear()
@@ -325,7 +326,7 @@ class SensorMonitor:
 
             if not self.timestamps:
                  print("No valid historic data processed.")
-                 return
+                 return False # Indicate failure
 
             # Set start time for labeling
             self.start_time = self.timestamps[0]
@@ -353,18 +354,20 @@ class SensorMonitor:
 
             # Ensure plot redraws
             self.fig.canvas.draw_idle()
-            plt.show() # Display the static plot
+            return True # Indicate success
 
         except requests.exceptions.RequestException as e:
             print(f"Error fetching historic data: {e}")
+            return False
         except json.JSONDecodeError:
             print(f"Error: Could not decode JSON response from {self.historic_endpoint}")
+            return False
         except Exception as e:
              print(f"An unexpected error occurred during historic data processing: {e}")
-
+             return False
 
     def run_live(self):
-        """Run the animation for live data monitoring."""
+        """Run the animation for live data monitoring (or continuation)."""
         # Keep blit=False for robustness with subplots
         self.ani = animation.FuncAnimation(
             self.fig, self.update_plot, interval=self.update_interval*1000, blit=False)
@@ -381,6 +384,8 @@ def main():
     # --- Historic Flag ---
     parser.add_argument('--historic', action='store_true',
                         help='Fetch and display all available historic data instead of live monitoring.')
+    parser.add_argument('--continue', dest='continue_live', action='store_true',
+                        help='After displaying historic data, continue with live monitoring (requires --historic).')
 
     args = parser.parse_args()
 
@@ -391,15 +396,28 @@ def main():
         if args.time_window < 1 or args.time_window > 2880: # Allow up to 2 days
             parser.error("Max time window must be between 1 minute and 2880 minutes (2 days)")
 
+    if args.continue_live and not args.historic:
+        parser.error("--continue flag requires --historic flag to be set.")
+
     # --- Instantiate Monitor ---
     # Note: initial_time_window removed for simplicity, starts with max window now
     monitor = SensorMonitor(args.server, args.interval, args.time_window)
 
     # --- Mode Selection ---
     if args.historic:
-        print(f"Starting historic data viewer - fetching from {args.server}")
-        monitor.fetch_and_plot_historic_data()
-        print("Historic data plot closed.")
+        print(f"Historic mode activated - fetching from {args.server}")
+        historic_loaded = monitor.fetch_and_plot_historic_data()
+
+        if args.continue_live:
+            if historic_loaded:
+                print("Historic data loaded. Continuing with live monitoring...")
+                monitor.run_live() # Start live updates after historic plot
+            else:
+                print("Failed to load historic data. Cannot continue live monitoring.")
+        else: # Just historic, no continue
+            print("Displaying static historic plot. Close window to exit.")
+            plt.show() # Show the static plot now
+            print("Historic data plot closed.")
     else:
         print(f"Starting live sensor monitor - connecting to {args.server}")
         print(f"Update interval: {args.interval}s")
