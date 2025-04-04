@@ -130,15 +130,22 @@ random_value = 0
 print("\nIn the other programs, the Pico is a client -- meaning it sends data to remote computers.")
 print("This time the Pico is the SERVER, waiting for a remote computer to ask the Pico a question.")
 
-print("\nThe pico is listening to http://" + network_info[0])
+print("")
+print("The pico is listening to http://" + network_info[0])
+print("")
+print("  http://" + network_info[0] + "- Show the current web page with buttons to turn the light off and off and a display of all sensors")
+print("  http://" + network_info[0] + "/lighton - Turn the pimoroni light on and display the webpage")
+print("  http://" + network_info[0] + "/lightoff - Turn the pimoroni light off and display the webpage")
 
-print("\nIf you are able to connnect to that address, you can get weather data from the Pico server")
-print("\nAPI endpoint: http://" + network_info[0] + "/sensor - Returns sensor data as JSON")
+print("")
+print("If you are able to connnect to that address, you can get weather data from the Pico server")
+print("")
+print("API endpoint: http://" + network_info[0] + "/sensor - Returns sensor data as JSON")
 print("Individual endpoints:")
-print("  http://" + network_info[0] + "/temperature - Returns temperature only")
-print("  http://" + network_info[0] + "/pressure - Returns barometric pressure only")
-print("  http://" + network_info[0] + "/humidity - Returns humidity only")
-print("  http://" + network_info[0] + "/altitude - Returns altitude only")
+print("  http://" + network_info[0] + "/temperature - Returns temperature only in json")
+print("  http://" + network_info[0] + "/pressure - Returns barometric pressure only in json")
+print("  http://" + network_info[0] + "/humidity - Returns humidity only in json")
+print("  http://" + network_info[0] + "/altitude - Returns altitude only in json")
 
 
 # Main loop to listen for connections
@@ -159,14 +166,14 @@ while True:
             pass
         
         # Process the request and update variables
-        if request == '/lighton?':
+        if request == '/lighton?' or request == '/lighton':
             print("LED on")
             led.value(1)
             state = "ON"
             # Generate HTML response
             response = webpage(random_value, state)
             content_type = 'text/html'
-        elif request == '/lightoff?':
+        elif request == '/lightoff?' or request == '/lightoff':
             led.value(0)
             state = 'OFF'
             # Generate HTML response
