@@ -27,12 +27,15 @@ def format_altitude(value, pos):
 # ---------------------------------------------
 
 class SensorMonitor:
-    def __init__(self, server_url, update_interval=5, max_points=300, time_window_minutes=6):
+    def __init__(self, server_url, update_interval=5, max_points=300, 
+                 time_window_minutes=1440, initial_time_window_minutes=6):
         self.server_url = server_url
         self.update_interval = update_interval
         self.max_points = max_points
-        self.time_window_minutes = time_window_minutes
-        self.time_window_seconds = time_window_minutes * 60
+        self.max_time_window_minutes = time_window_minutes
+        self.max_time_window_seconds = time_window_minutes * 60
+        self.initial_time_window_minutes = initial_time_window_minutes
+        self.initial_time_window_seconds = initial_time_window_minutes * 60
         self.start_time = None # Will store the absolute start time
         
         # Initialize data storage
@@ -183,25 +186,42 @@ class SensorMonitor:
         
     def format_x_axis(self):
         """Format x-axis based on the current time range and window"""
-        if not self.timestamps:
+        if not self.timestamps or not self.start_time:
             return
             
         # Get the latest timestamp
         end_time = self.timestamps[-1]
         
+        # Calculate elapsed time since start
+        elapsed_seconds = (end_time - self.start_time).total_seconds()
+
+        # Determine the current display window size
+        # Start with initial, expand up to elapsed time, capped by max window
+        current_display_window_seconds = max(
+            self.initial_time_window_seconds, 
+            min(elapsed_seconds + 30, self.max_time_window_seconds) # Add 30s buffer to elapsed
+        )
+
         # Calculate the start time for the desired window
-        start_time = end_time - timedelta(seconds=self.time_window_seconds)
+        # Ensure start_time doesn't go before the actual data start_time for the initial phase
+        view_start_time = max(
+             self.start_time, 
+             end_time - timedelta(seconds=current_display_window_seconds)
+        )
         
-        # Set xlim only on one axis (since they are shared)
-        self.ax_temp.set_xlim(start_time, end_time)
+        # Set xlim: from calculated view_start_time to the latest end_time
+        # Add a small buffer to the end_time for visibility
+        view_end_time = end_time + timedelta(seconds=5) # Add 5 sec buffer to end
+        self.ax_temp.set_xlim(view_start_time, view_end_time)
         
         # Update the bottom axis label with the session start time
-        start_label = self.start_time.strftime("%Y%m%d_%H%M%S") if self.start_time else "N/A"
+        start_label = self.start_time.strftime("%Y%m%d_%H%M%S")
         self.ax_alt.set_xlabel(f'Time -- Started at {start_label}')
         
         # The locator and formatter handle adapting to the scale automatically
-        # No need to manually change locators/formatters here
-        
+        # Need to trigger redraw if limits change substantially
+        self.fig.canvas.draw_idle()
+
     def update_plot(self, frame):
         """Update function for animation"""
         # Fetch new data
@@ -261,9 +281,11 @@ def main():
     parser.add_argument('--interval', type=float, default=5.0,
                         help='Update interval in seconds (1-3600)')
     parser.add_argument('--points', type=int, default=300,
-                        help='Maximum number of data points to display')
-    parser.add_argument('--time-window', type=float, default=6.0,
-                        help='Time window to display in minutes (up to 2880 for 2 days)')
+                        help='Maximum number of data points to display (affects history)')
+    parser.add_argument('--time-window', type=float, default=1440.0, 
+                        help='Maximum time window to display in minutes (e.g., 1440 for 24 hours)')
+    parser.add_argument('--initial-time-window', type=float, default=6.0, 
+                        help='Initial time window to display in minutes')
     
     args = parser.parse_args()
     
@@ -273,11 +295,17 @@ def main():
         
     # Validate time window (up to 2 days)
     if args.time_window < 1 or args.time_window > 2880:
-        parser.error("Time window must be between 1 minute and 2880 minutes (2 days)")
-    
+        parser.error("Max time window must be between 1 minute and 2880 minutes (2 days)")
+        
+    # Validate initial time window
+    if args.initial_time_window < 1 or args.initial_time_window > args.time_window:
+        parser.error(f"Initial time window must be between 1 and the max time window ({args.time_window} minutes)")
+
     print(f"Starting sensor monitor - connecting to {args.server}")
-    print(f"Update interval: {args.interval}s, Time window: {args.time_window} minutes")
-    monitor = SensorMonitor(args.server, args.interval, args.points, args.time_window)
+    print(f"Update interval: {args.interval}s")
+    print(f"Initial time window: {args.initial_time_window} minutes, Max time window: {args.time_window} minutes")
+    monitor = SensorMonitor(args.server, args.interval, args.points, 
+                            args.time_window, args.initial_time_window)
     monitor.run()
 
 if __name__ == "__main__":
