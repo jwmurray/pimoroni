@@ -1,0 +1,2 @@
+WIFI_SSID = 'QuietEntry'
+WIFI_PASSWORD = 'AAAAAAAAAA'
