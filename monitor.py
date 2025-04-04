@@ -11,6 +11,7 @@ import matplotlib.dates as mdates
 from matplotlib.ticker import AutoMinorLocator, FuncFormatter
 from datetime import datetime, timedelta
 from collections import deque
+import math # Import math for ceiling calculation
 
 # --- Formatting functions for Y-axis ticks ---
 def format_temp_humid(value, pos):
@@ -27,23 +28,27 @@ def format_altitude(value, pos):
 # ---------------------------------------------
 
 class SensorMonitor:
-    def __init__(self, server_url, update_interval=5, max_points=300, 
+    def __init__(self, server_url, update_interval=5, 
                  time_window_minutes=1440, initial_time_window_minutes=6):
         self.server_url = server_url
-        self.update_interval = update_interval
-        self.max_points = max_points
+        self.update_interval = update_interval # seconds
         self.max_time_window_minutes = time_window_minutes
         self.max_time_window_seconds = time_window_minutes * 60
         self.initial_time_window_minutes = initial_time_window_minutes
         self.initial_time_window_seconds = initial_time_window_minutes * 60
         self.start_time = None # Will store the absolute start time
-        
-        # Initialize data storage
-        self.timestamps = deque(maxlen=max_points) # Will store datetime objects
-        self.temperature_data = deque(maxlen=max_points)
-        self.pressure_data = deque(maxlen=max_points)
-        self.humidity_data = deque(maxlen=max_points)
-        self.altitude_data = deque(maxlen=max_points)
+
+        # Calculate max_points needed based on max window and interval
+        # Add a small buffer (e.g., 10%) just in case
+        self.max_points = math.ceil((self.max_time_window_seconds / self.update_interval) * 1.1) 
+        print(f"Calculated max_points to store: {self.max_points} (for {self.max_time_window_minutes} min window at {self.update_interval}s interval)")
+
+        # Initialize data storage with calculated max_points
+        self.timestamps = deque(maxlen=self.max_points)
+        self.temperature_data = deque(maxlen=self.max_points)
+        self.pressure_data = deque(maxlen=self.max_points)
+        self.humidity_data = deque(maxlen=self.max_points)
+        self.altitude_data = deque(maxlen=self.max_points)
         
         # Min/max values for each sensor
         self.ranges = {
@@ -192,26 +197,16 @@ class SensorMonitor:
         # Get the latest timestamp
         end_time = self.timestamps[-1]
         
-        # Calculate elapsed time since start
-        elapsed_seconds = (end_time - self.start_time).total_seconds()
-
-        # Determine the current display window size
-        # Start with initial, expand up to elapsed time, capped by max window
-        current_display_window_seconds = max(
-            self.initial_time_window_seconds, 
-            min(elapsed_seconds + 30, self.max_time_window_seconds) # Add 30s buffer to elapsed
-        )
-
-        # Calculate the start time for the desired window
-        # Ensure start_time doesn't go before the actual data start_time for the initial phase
+        # Calculate the start time for the view window
+        # It's either the session start time, or end_time - max_window, whichever is later.
         view_start_time = max(
-             self.start_time, 
-             end_time - timedelta(seconds=current_display_window_seconds)
+            self.start_time, 
+            end_time - timedelta(seconds=self.max_time_window_seconds)
         )
         
         # Set xlim: from calculated view_start_time to the latest end_time
         # Add a small buffer to the end_time for visibility
-        view_end_time = end_time + timedelta(seconds=5) # Add 5 sec buffer to end
+        view_end_time = end_time + timedelta(seconds=self.update_interval * 2) # Buffer based on interval
         self.ax_temp.set_xlim(view_start_time, view_end_time)
         
         # Update the bottom axis label with the session start time
@@ -257,12 +252,14 @@ class SensorMonitor:
             # Format x-axis based on current time range and window
             self.format_x_axis()
             
-            # Update the main title with the last reading
+            # Update the main title with the last reading time and values
+            last_reading_time_str = current_time.strftime("%H:%M:%S")
             reading_title = (f'Temp: {self.temperature_data[-1]:.1f}°F, '
                          f'Pressure: {self.pressure_data[-1]:.0f}Pa, '
                          f'Humidity: {self.humidity_data[-1]:.1f}%, '
                          f'Altitude: {self.altitude_data[-1]:.0f}ft')
-            self.fig.suptitle(f'Real-time Sensor Data from Pico\nLast Reading: {reading_title}', fontsize=14, y=0.98)
+            self.fig.suptitle(f'Real-time Sensor Data (Last Reading: {last_reading_time_str})\n{reading_title}', 
+                            fontsize=14, y=0.98)
             
         # Return only the lines
         return self.temp_line, self.press_line, self.humid_line, self.alt_line
@@ -280,12 +277,10 @@ def main():
                         help='URL of the Pico API server')
     parser.add_argument('--interval', type=float, default=5.0,
                         help='Update interval in seconds (1-3600)')
-    parser.add_argument('--points', type=int, default=300,
-                        help='Maximum number of data points to display (affects history)')
     parser.add_argument('--time-window', type=float, default=1440.0, 
                         help='Maximum time window to display in minutes (e.g., 1440 for 24 hours)')
     parser.add_argument('--initial-time-window', type=float, default=6.0, 
-                        help='Initial time window to display in minutes')
+                        help='Initial time window to display in minutes (will expand up to max)')
     
     args = parser.parse_args()
     
@@ -304,7 +299,7 @@ def main():
     print(f"Starting sensor monitor - connecting to {args.server}")
     print(f"Update interval: {args.interval}s")
     print(f"Initial time window: {args.initial_time_window} minutes, Max time window: {args.time_window} minutes")
-    monitor = SensorMonitor(args.server, args.interval, args.points, 
+    monitor = SensorMonitor(args.server, args.interval, 
                             args.time_window, args.initial_time_window)
     monitor.run()
 
