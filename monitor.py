@@ -27,6 +27,19 @@ def format_altitude(value, pos):
     return f'{int(value)}'
 # ---------------------------------------------
 
+# --- Formatting function for X-axis time ticks ---
+def format_xaxis_time(value, pos):
+    """Formats matplotlib numerical date value to HH:MM:SS.s"""
+    try:
+        # Convert matplotlib float date to datetime object
+        dt_object = mdates.num2date(value)
+        # Format to include tenths of a second (microseconds / 100000)
+        return dt_object.strftime('%H:%M:%S') + f'.{dt_object.microsecond // 100000}'
+    except ValueError:
+        # Handle cases where conversion might fail (e.g., out of range)
+        return ""
+# ---------------------------------------------
+
 class SensorMonitor:
     def __init__(self, server_url, update_interval=5, 
                  time_window_minutes=1440, initial_time_window_minutes=6):
@@ -98,30 +111,55 @@ class SensorMonitor:
                 # Update y-axis limits
                 ax.set_ylim(min_val, max_val)
                 
-                # --- Tick logic remains the same, adapting to the new tighter limits --- 
+                # --- Tick logic: Ensure min/max are always labeled --- 
                 tick_range = max_val - min_val
-                num_ticks = 5 # Aim for around 5 major ticks
-                
+                num_ticks_target = 5 # Target number of ticks
+
+                # Determine a reasonable major step based on the range
                 if key == 'temperature':
-                    if tick_range <= 2: major_step, minor_step = 0.5, 0.1
-                    elif tick_range <= 5: major_step, minor_step = 1.0, 0.2
-                    elif tick_range <= 10: major_step, minor_step = 2.0, 0.5
-                    else: major_step, minor_step = 5.0, 1.0
+                    if tick_range <= 1: major_step = 0.2
+                    elif tick_range <= 2: major_step = 0.5
+                    elif tick_range <= 5: major_step = 1.0
+                    elif tick_range <= 10: major_step = 2.0
+                    else: major_step = max(1.0, round(tick_range / num_ticks_target))
+                    minor_step = major_step / 5.0
                 elif key == 'pressure':
-                    major_step = max(100, np.ceil(tick_range / num_ticks / 100) * 100)
-                    minor_step = major_step / 4
+                    major_step = max(100, np.ceil(tick_range / num_ticks_target / 100) * 100)
+                    minor_step = major_step / 4.0
                 elif key == 'humidity':
-                    if tick_range <= 5: major_step, minor_step = 1, 0.2
-                    elif tick_range <= 10: major_step, minor_step = 2, 0.5
-                    else: major_step, minor_step = max(5, np.ceil(tick_range / num_ticks / 5)*5), 1
+                    if tick_range <= 2: major_step = 0.5
+                    elif tick_range <= 5: major_step = 1.0
+                    elif tick_range <= 10: major_step = 2.0
+                    else: major_step = max(1.0, round(tick_range / num_ticks_target))
+                    minor_step = major_step / 5.0
                 else: # altitude
-                    major_step = max(10, np.ceil(tick_range / num_ticks / 10) * 10)
-                    minor_step = major_step / 5
+                    major_step = max(10, np.ceil(tick_range / num_ticks_target / 10) * 10)
+                    minor_step = major_step / 5.0
+
+                # Generate intermediate ticks based on the step
+                # Start slightly above min_val rounded to step, end slightly below max_val rounded to step
+                start_tick = np.ceil(min_val / major_step) * major_step
+                end_tick = np.floor(max_val / major_step) * major_step
+                intermediate_ticks = np.arange(start_tick, end_tick + major_step * 0.5, major_step)
+
+                # Combine min, max, and intermediate ticks, remove duplicates, and sort
+                tick_locations = sorted(list(set([min_val] + list(intermediate_ticks) + [max_val])))
+
+                # Filter out ticks that are too close together (e.g., closer than 1/10th of step)
+                final_tick_locations = []
+                if tick_locations:
+                    final_tick_locations.append(tick_locations[0])
+                    min_tick_spacing = major_step * 0.1
+                    for i in range(1, len(tick_locations)):
+                        if tick_locations[i] - final_tick_locations[-1] >= min_tick_spacing:
+                            final_tick_locations.append(tick_locations[i])
                     
-                ax.yaxis.set_major_locator(plt.MultipleLocator(major_step))
+                # Use FixedLocator for major ticks
+                ax.yaxis.set_major_locator(plt.FixedLocator(final_tick_locations))
+                # Still use MultipleLocator for minor ticks
                 ax.yaxis.set_minor_locator(plt.MultipleLocator(minor_step))
                 ax.yaxis.set_major_formatter(FuncFormatter(formatter))
-                # --- End of Tick logic --- 
+                # --- End of Tick logic ---
     
     def setup_plot(self):
         """Set up the plot with 4 subplots"""
@@ -161,9 +199,10 @@ class SensorMonitor:
         # Initially set bottom x-axis label (will be updated)
         self.ax_alt.set_xlabel('Time')
         
-        # Use AutoDateLocator and ConciseDateFormatter for the shared x-axis
-        locator = mdates.AutoDateLocator(minticks=3, maxticks=7)
-        formatter = mdates.ConciseDateFormatter(locator)
+        # Use AutoDateLocator to find tick positions automatically
+        locator = mdates.AutoDateLocator(minticks=3, maxticks=10) # Allow more ticks for finer scale
+        # Use our custom FuncFormatter for the labels
+        formatter = FuncFormatter(format_xaxis_time)
         self.ax_alt.xaxis.set_major_locator(locator)
         self.ax_alt.xaxis.set_major_formatter(formatter)
 
@@ -174,7 +213,7 @@ class SensorMonitor:
         self.fig.subplots_adjust(top=0.92, hspace=0.4)
         
     def format_x_axis(self):
-        """Format x-axis based on the current time range and window"""
+        """Format x-axis based on the current time range and window."""
         if not self.timestamps or not self.start_time:
             return
             
@@ -182,23 +221,24 @@ class SensorMonitor:
         end_time = self.timestamps[-1]
         
         # Calculate the start time for the view window
-        # It's either the session start time, or end_time - max_window, whichever is later.
         view_start_time = max(
             self.start_time, 
             end_time - timedelta(seconds=self.max_time_window_seconds)
         )
-        
-        # Set xlim: from calculated view_start_time to the latest end_time
         # Add a small buffer to the end_time for visibility
-        view_end_time = end_time + timedelta(seconds=self.update_interval * 2) # Buffer based on interval
-        self.ax_temp.set_xlim(view_start_time, view_end_time)
+        view_end_time = end_time + timedelta(seconds=self.update_interval * 2)
         
+        # Set xlim first so the locator can work with the correct range
+        self.ax_temp.set_xlim(view_start_time, view_end_time)
+
+        # AutoDateLocator and our FuncFormatter handle ticks and labels
+        # No need for FixedLocator logic here
+
         # Update the bottom axis label with the session start time
         start_label = self.start_time.strftime("%Y%m%d_%H%M%S")
         self.ax_alt.set_xlabel(f'Time -- Started at {start_label}')
         
-        # The locator and formatter handle adapting to the scale automatically
-        # Need to trigger redraw if limits change substantially
+        # Need to trigger redraw if limits or ticks change substantially
         self.fig.canvas.draw_idle()
 
     def update_plot(self, frame):
