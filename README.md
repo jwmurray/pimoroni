@@ -18,3 +18,6 @@ Altitude is in meters.
 P is the measured barometric pressure (e.g., in Pascals).
 P₀ is the standard atmospheric pressure at mean sea level (typically fixed at 101325 Pa).
 The constants (44330 and 1/5.255) relate to standard temperature, gravity, and air composition assumptions.
+
+## monitory.py on ubuntu    
+Run monitory.py on ubuntu.  See the comments at the top of monitor.py for instructions on how to run it.  main.py should be started on the pico first.
