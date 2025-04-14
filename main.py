@@ -6,215 +6,403 @@ import socket
 import time
 import random
 import json
-from machine import Pin
+from machine import Pin, RTC
 import qwiic_bme280
+import uerrno # For non-blocking socket errors
+import sys
 
+# --- Configuration ---
+# Wi-Fi credentials are imported later from secrets
+# Sensor History Configuration
+SAVE_INTERVAL_S = 5  # Save data every 5 seconds
+SAVE_TO_FLASH_INTERVAL_S = 900 # Save RAM history to flash every 15 minutes (900 seconds)
+HISTORY_DURATION_S = 86400 # Keep data for 24 hours (in seconds)
+HISTORY_FILENAME = "sensor_history.json"
 
-print("\nApi Server for PiMoroni Pico Plus 2w with SparkFun BME280\n")
-mySensor = qwiic_bme280.QwiicBme280()
+# --- Global Variables ---
+historical_data = [] # List to store sensor readings as tuples: (timestamp, temp_f, pressure_pa, humidity_pct, altitude_ft)
+last_save_ticks_ms = time.ticks_ms() # Use ticks_ms for interval timing
+last_flash_save_ticks_ms = time.ticks_ms() # Timer for saving to flash
 
-if mySensor.connected == False:
-    print("The Qwiic BME280 device isn't connected to the system. Please check your connection", \
-        file=sys.stderr)
-    exit()
+def _get_current_sensor_tuple():
+    """Reads sensor and returns data as a tuple."""
+    if mySensor.connected:
+        try:
+            # Trigger readings - properties might cache otherwise
+            t = mySensor.temperature_fahrenheit
+            p = mySensor.pressure
+            h = mySensor.humidity
+            a = mySensor.altitude_feet
+            # Return the tuple
+            return (t, p, h, a)
+        except Exception as e:
+            print(f"Error reading sensor: {e}")
+            return (None, None, None, None)
+    else:
+        # Return None or default values if sensor disconnects
+        return (None, None, None, None)
 
-mySensor.begin()
+def save_history_to_flash():
+    """Saves the current historical_data list (from RAM) to a JSON file on flash."""
+    global historical_data
+    print(f"Attempting to save history ({len(historical_data)} points) to {HISTORY_FILENAME}...")
+    try:
+        with open(HISTORY_FILENAME, 'w') as f:
+            json.dump(historical_data, f)
+        print("History saved successfully.")
+        return True
+    except OSError as e:
+        print(f"Error saving history to flash: {e}")
+        return False
+    except Exception as e:
+        print(f"Unexpected error saving history: {e}")
+        return False
 
+def load_history_from_flash():
+    """Loads history from the JSON file on flash into the historical_data list (RAM)."""
+    global historical_data
+    try:
+        with open(HISTORY_FILENAME, 'r') as f:
+            loaded_data = json.load(f)
+            if isinstance(loaded_data, list):
+                historical_data = loaded_data
+                print(f"Loaded {len(historical_data)} points from {HISTORY_FILENAME}.")
+            else:
+                print(f"Warning: Data in {HISTORY_FILENAME} is not a list. Starting fresh.")
+                historical_data = [] # Ensure it's a list if file is corrupt
+    except OSError:
+        print(f"{HISTORY_FILENAME} not found. Starting with empty history.")
+    except (ValueError, TypeError) as e: # Handle JSON decoding errors
+        print(f"Error decoding JSON from {HISTORY_FILENAME}: {e}. Starting fresh.")
+        historical_data = [] # Start fresh if file is corrupt
 
-# Setup the LED pin.
-led = Pin('LEDW', Pin.OUT)
-
-
-
-# Wi-Fi credentials
-from secrets import WIFI_SSID, WIFI_PASSWORD
-ssid = WIFI_SSID
-password = WIFI_PASSWORD
-
-
-# HTML template for the webpage
-def webpage(random_value, state):
+def webpage(current_sensor_tuple, led_state):
+    """Generates the HTML webpage content."""
+    temp, press, hum, alt = current_sensor_tuple
+    temp_str = f"{temp:.2f}" if temp is not None else "N/A"
+    press_str = f"{press:.2f}" if press is not None else "N/A" # Assuming Pa needs .2f is okay, adjust if needed
+    hum_str = f"{hum:.2f}" if hum is not None else "N/A"
+    alt_str = f"{alt:.2f}" if alt is not None else "N/A"
     html = f"""
         <!DOCTYPE html>
         <html>
         <head>
             <title>Pico Web Server</title>
             <meta name="viewport" content="width=device-width, initial-scale=1">
+            <meta http-equiv="refresh" content="30">
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                h1, h2 {{ color: #333; }}
+                .sensor-data p {{ margin: 5px 0; }}
+                .controls form {{ display: inline-block; margin-right: 10px; }}
+                input[type="submit"] {{ padding: 10px 15px; cursor: pointer; }}
+            </style>
         </head>
         <body>
-            <h1>Raspberry Pi Pico Web Server</h1>
+            <h1>Raspberry Pi Pico W Sensor Server</h1>
             <h2>Led Control</h2>
-            <form action="./lighton">
-                <input type="submit" value="Light on" />
-            </form>
-            <br>
-            <form action="./lightoff">
-                <input type="submit" value="Light off" />
-            </form>
-            <p>LED state: {state}</p>
-            <h2>Fetch New Value</h2>
-            <form action="./value">
-                <input type="submit" value="Fetch value" />
-            </form>
-            <p>Temperature: {mySensor.temperature_fahrenheit}</p>
-            <p>Barometric Pressure: {mySensor.pressure}</p>
-            <p>Humidity: {mySensor.humidity}</p>
-            <p>Altitude: {mySensor.altitude_feet}</p>
+            <div class="controls">
+                <form action="./lighton">
+                    <input type="submit" value="Light ON" />
+                </form>
+                <form action="./lightoff">
+                    <input type="submit" value="Light OFF" />
+                </form>
+                <p>LED state: <strong>{led_state}</strong></p>
+            </div>
+            <h2>Current Sensor Readings</h2>
+            <div class="sensor-data">
+                <p>Temperature: {temp_str} °F</p>
+                <p>Barometric Pressure: {press_str} Pa</p>
+                <p>Humidity: {hum_str} %</p>
+                <p>Approx. Altitude: {alt_str} ft</p>
+            </div>
+            <p><small>Page refreshes automatically every 30 seconds.</small></p>
+            <p><small>To get all historical data (last 24h): <a href="/sensor?all=true">/sensor?all=true</a></small></p>
         </body>
         </html>
         """
     return str(html)
 
-# Function to get sensor data as JSON
-def get_sensor_data():
-    sensor_data = {
-        "temperature": mySensor.temperature_fahrenheit,
-        "barometric_pressure": mySensor.pressure,
-        "humidity": mySensor.humidity,
-        "altitude": mySensor.altitude_feet
-    }
-    return json.dumps(sensor_data)
+def log_historical_data():
+    """Checks interval, logs sensor data, and prunes old data."""
+    global last_save_ticks_ms, historical_data
+    now_ticks = time.ticks_ms()
+    # Check if SAVE_INTERVAL_S has passed
+    if time.ticks_diff(now_ticks, last_save_ticks_ms) >= SAVE_INTERVAL_S * 1000:
+        current_data_tuple = _get_current_sensor_tuple()
+        # Only save if sensor reading was successful
+        if all(val is not None for val in current_data_tuple):
+            current_timestamp = time.time() # Get absolute time (requires RTC sync)
+            historical_data.append((current_timestamp,) + current_data_tuple)
+            last_save_ticks_ms = now_ticks # Reset interval timer
+            print(f"Logged data at {current_timestamp}. Total points: {len(historical_data)}")
 
-# Individual sensor endpoint functions
-def get_temperature():
-    temp_data = {"temperature": mySensor.temperature_fahrenheit}
-    return json.dumps(temp_data)
-
-def get_pressure():
-    pressure_data = {"barometric_pressure": mySensor.pressure}
-    return json.dumps(pressure_data)
-
-def get_humidity():
-    humidity_data = {"humidity": mySensor.humidity}
-    return json.dumps(humidity_data)
-
-def get_altitude():
-    altitude_data = {"altitude": mySensor.altitude_feet}
-    return json.dumps(altitude_data)
-
-# Connect to WLAN
-wlan = network.WLAN(network.STA_IF)
-wlan.active(True)
-wlan.connect(ssid, password)
-
-# Wait for Wi-Fi connection
-connection_timeout = 10
-while connection_timeout > 0:
-    if wlan.status() >= 3:
-        break
-    connection_timeout -= 1
-    print('Waiting for Wi-Fi connection...')
-    time.sleep(1)
-
-# Check if connection is successful
-if wlan.status() != 3:
-    raise RuntimeError('Failed to establish a network connection')
-else:
-    print('Connection successful!')
-    network_info = wlan.ifconfig()
-    print('IP address: http://' + network_info[0])
-
-# Set up socket and start listening
-addr = socket.getaddrinfo('0.0.0.0', 80)[0][-1]
-s = socket.socket()
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(addr)
-s.listen()
-
-print('Listening on', addr)
-
-# Initialize variables
-state = "OFF"
-random_value = 0
-
-print("\nIn the other programs, the Pico is a client -- meaning it sends data to remote computers.")
-print("This time the Pico is the SERVER, waiting for a remote computer to ask the Pico a question.")
-
-print("")
-print("The pico is listening to http://" + network_info[0])
-print("")
-print("  http://" + network_info[0] + "- Show the current web page with buttons to turn the light off and off and a display of all sensors")
-print("  http://" + network_info[0] + "/lighton - Turn the pimoroni light on and display the webpage")
-print("  http://" + network_info[0] + "/lightoff - Turn the pimoroni light off and display the webpage")
-
-print("")
-print("If you are able to connnect to that address, you can get weather data from the Pico server")
-print("")
-print("API endpoint: http://" + network_info[0] + "/sensor - Returns sensor data as JSON")
-print("Individual endpoints:")
-print("  http://" + network_info[0] + "/temperature - Returns temperature only in json")
-print("  http://" + network_info[0] + "/pressure - Returns barometric pressure only in json")
-print("  http://" + network_info[0] + "/humidity - Returns humidity only in json")
-print("  http://" + network_info[0] + "/altitude - Returns altitude only in json")
-
-
-# Main loop to listen for connections
-while True:
-    try:
-        conn, addr = s.accept()
-        print('\nReceived a connection from', addr)
-        
-        # Receive and parse the request
-        request = conn.recv(1024)
-        request = str(request)
-        print('Request content = %s' % request)
-
-        try:
-            request = request.split()[1]
-            print('Request:', request)
-        except IndexError:
-            pass
-        
-        # Process the request and update variables
-        if request == '/lighton?' or request == '/lighton':
-            print("LED on")
-            led.value(1)
-            state = "ON"
-            # Generate HTML response
-            response = webpage(random_value, state)
-            content_type = 'text/html'
-        elif request == '/lightoff?' or request == '/lightoff':
-            led.value(0)
-            state = 'OFF'
-            # Generate HTML response
-            response = webpage(random_value, state)
-            content_type = 'text/html'
-        elif request == '/value?':
-            random_value = random.randint(0, 20)
-            # Generate HTML response
-            response = webpage(random_value, state)
-            content_type = 'text/html'
-        elif request == '/sensor' or request == '/sensor?':
-            # Generate JSON response for sensor data
-            response = get_sensor_data()
-            content_type = 'application/json'
-            print("Sensor data requested, sending JSON")
-        elif request == '/temperature' or request == '/temperature?':
-            response = get_temperature()
-            content_type = 'application/json'
-            print("Temperature requested, sending JSON:", response)
-        elif request == '/pressure' or request == '/pressure?':
-            response = get_pressure()
-            content_type = 'application/json'
-            print("Pressure requested, sending JSON:", response)
-        elif request == '/humidity' or request == '/humidity?':
-            response = get_humidity()
-            content_type = 'application/json'
-            print("Humidity requested, sending JSON:", response)
-        elif request == '/altitude' or request == '/altitude?':
-            response = get_altitude()
-            content_type = 'application/json'
-            print("Altitude requested, sending JSON:", response)
+            # Prune old data (more efficient to check the oldest first)
+            now = time.time()
+            while historical_data and (now - historical_data[0][0] > HISTORY_DURATION_S):
+                removed = historical_data.pop(0)
+                # print(f"Removed old data point: {removed[0]}") # Can be verbose
         else:
-            # Default: show webpage
-            response = webpage(random_value, state)
-            content_type = 'text/html'
+             print("Skipping logging: Sensor read failed.")
 
-        # Send the HTTP response and close the connection
-        conn.send(f'HTTP/1.0 200 OK\r\nContent-type: {content_type}\r\n\r\n')
-        conn.send(response)
-        conn.close()
+def main():
+    print("\nApi Server for PiMoroni Pico Plus 2w with SparkFun BME280\n")
+    global mySensor, historical_data, last_save_ticks_ms, last_flash_save_ticks_ms
+    mySensor = qwiic_bme280.QwiicBme280()
+    historical_data = []  # Initialize historical data list
+    last_save_ticks_ms = time.ticks_ms()  # Initialize save timestamp
+    last_flash_save_ticks_ms = time.ticks_ms()  # Initialize flash save timestamp
 
-    except OSError as e:
-        conn.close()
-        print('Connection closed')
+    if mySensor.connected == False:
+        print("The Qwiic BME280 device isn't connected to the system. Please check your connection", \
+            file=sys.stderr)
+        return
+
+    try:
+        mySensor.begin()
+        print("BME280 Initialized.")
+    except Exception as e:
+        print(f"Error initializing BME280: {e}")
+        return
+
+    # Setup the LED pin.
+    led = Pin('LEDW', Pin.OUT)
+
+    # Wi-Fi credentials
+    from secrets import WIFI_SSID, WIFI_PASSWORD
+    ssid = WIFI_SSID
+    password = WIFI_PASSWORD
+
+    # Connect to WLAN and setup RTC
+    rtc = RTC()
+    ip_address = None  # Initialize ip_address to None
+    network_info = None  # Initialize network_info to None
+    addr = None  # Initialize addr to None
+    s = None  # Initialize socket to None
+
+    # Connect to WLAN
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    wlan.connect(ssid, password)
+
+    # Wait for Wi-Fi connection
+    connection_timeout = 15
+    while connection_timeout > 0:
+        if wlan.status() >= 3:
+            break
+        connection_timeout -= 1
+        print('.', end='')
+        time.sleep(1)
+
+    print() # Newline after dots
+
+    # Check if connection is successful
+    if wlan.status() != 3:
+        raise RuntimeError('Failed to establish a network connection')
+    else:
+        print('Connection successful!')
+        network_info = wlan.ifconfig()
+        ip_address = network_info[0]  # Store IP address
+        print('IP address: http://' + ip_address)
+        # Attempt to sync RTC with NTP - requires internet access
+        try:
+            import ntptime
+            print("Attempting to sync RTC with NTP...")
+            ntptime.settime()
+            print(f"RTC synced: {rtc.datetime()}")
+        except ImportError:
+            print("NTP module not available. RTC not synced.")
+        except OSError as e:
+            print(f"Could not sync RTC with NTP: {e}")
+
+    # Load existing history from Flash
+    load_history_from_flash()
+
+    # Set up socket and start listening
+    try:
+        addr = socket.getaddrinfo('0.0.0.0', 80)[0][-1]
+        s = socket.socket()
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(addr)
+        s.listen(5) # Increase backlog
+
+        if addr:
+            print('Listening on', addr)
+        else:
+            print('Error: Could not determine listening address')
+            return
+    except Exception as e:
+        print(f'Error setting up socket: {e}')
+        return
+
+    # Initialize variables
+    state = "OFF"
+    random_value = 0
+
+    print("\nIn the other programs, the Pico is a client -- meaning it sends data to remote computers.")
+    print("This time the Pico is the SERVER, waiting for a remote computer to ask the Pico a question.")
+
+    print("")
+    if ip_address and network_info:
+        print("The pico is listening to http://" + ip_address)
+        print("")
+        print("  http://" + ip_address + "- Show the current web page with buttons to turn the light off and off and a display of all sensors")
+        print("  http://" + ip_address + "/lighton - Turn the pimoroni light on and display the webpage")
+        print("  http://" + ip_address + "/lightoff - Turn the pimoroni light off and display the webpage")
+
+        print("")
+        print(f"History file: {HISTORY_FILENAME} (saved every {SAVE_TO_FLASH_INTERVAL_S}s)")
+        print("Warning: Frequent saving wears out flash memory over time.")
+        print("If you are able to connnect to that address, you can get weather data from the Pico server")
+        print("")
+        print("API endpoint: http://" + ip_address + "/sensor - Returns sensor data as JSON")
+        print("Individual endpoints:")
+        print("  http://" + ip_address + "/temperature - Returns temperature only in json")
+        print("  http://" + ip_address + "/pressure - Returns barometric pressure only in json")
+        print("  http://" + ip_address + "/humidity - Returns humidity only in json")
+        print("  http://" + ip_address + "/altitude - Returns altitude only in json")
+
+        print("\n--- API Endpoints ---")
+        print(f"  http://{ip_address}/sensor     - Get current sensor data (JSON)")
+        print(f"  http://{ip_address}/sensor?all=true - Get historical data (last 24h, JSON)")
+    else:
+        print("Warning: No IP address available. Server may not be accessible.")
+
+    print("\nServer started. Waiting for connections...")
+
+    # Main loop to listen for connections
+    while True:
+        # --- Periodic Tasks (run every loop iteration) ---
+        try:
+            log_historical_data()
+        except Exception as e:
+            print(f"Error during periodic tasks: {e}")
+
+        # Check if it's time to save the RAM history to flash
+        now_ticks_flash = time.ticks_ms()
+        if time.ticks_diff(now_ticks_flash, last_flash_save_ticks_ms) >= SAVE_TO_FLASH_INTERVAL_S * 1000:
+            if save_history_to_flash():
+                last_flash_save_ticks_ms = now_ticks_flash # Reset flash save timer only on success
+
+        # --- Handle Web Requests ---
+        conn = None # Ensure conn is defined
+        try:
+            # Accept connection (blocking call)
+            conn, addr = s.accept()
+            conn.settimeout(5.0) # Set timeout for recv
+            print(f'\nReceived connection from {addr}')
+
+            # Receive and parse the request
+            request_bytes = conn.recv(1024)
+            conn.settimeout(None) # Disable timeout after recv
+            request_str = request_bytes.decode('utf-8')
+            # print('Request content = %s' % request_str) # Can be verbose
+
+            # Simple request parsing
+            request_line = request_str.split('\r\n')[0]
+            parts = request_line.split()
+            response = ""
+            content_type = 'text/html' # Default
+            status_code = 200 # Default
+
+            if len(parts) >= 2:
+                method = parts[0]
+                path = parts[1]
+                print(f"Request: {method} {path}")
+
+                # Process the request and update variables
+                if path == '/lighton' or path == '/lighton?':
+                    print("LED on")
+                    led.value(1)
+                    state = "ON"
+                    # Generate HTML response
+                    response = webpage(_get_current_sensor_tuple(), state)
+                elif path == '/lightoff' or path == '/lightoff?':
+                    led.value(0)
+                    state = 'OFF'
+                    print("LED off")
+                    # Generate HTML response
+                    response = webpage(_get_current_sensor_tuple(), state)
+                # --- New Endpoint Logic ---
+                elif path == '/sensor?all=true':
+                     print(f"Historical data requested. Sending {len(historical_data)} points.")
+                     # Directly dump the list of tuples: [(ts, temp, prs, hum, alt), ...]
+                     response = json.dumps(historical_data)
+                     content_type = 'application/json'
+                elif path == '/sensor' or path == '/sensor?':
+                    print("Current sensor data requested.")
+                    current_data = _get_current_sensor_tuple()
+                    if all(v is not None for v in current_data):
+                        # Structure as a dictionary for clarity
+                        data_dict = {
+                            "timestamp": time.time(), # Add current timestamp
+                            "temperature_f": current_data[0],
+                            "pressure_pa": current_data[1],
+                            "humidity_percent": current_data[2],
+                            "altitude_ft": current_data[3]
+                        }
+                        response = json.dumps(data_dict)
+                        content_type = 'application/json'
+                    else:
+                        status_code = 503 # Service Unavailable (sensor failed)
+                        response = json.dumps({"error": "Sensor read failure"})
+                        content_type = 'application/json'
+                # --- End New Endpoint Logic ---
+                # Keep the root path handler
+                elif path == '/' or path == '/?':
+                     response = webpage(_get_current_sensor_tuple(), state)
+                # Handle unknown paths
+                else:
+                     status_code = 404
+                     response = "Not Found"
+                     content_type = 'text/plain'
+
+            else: # Malformed request
+                status_code = 400
+                response = "Bad Request"
+                content_type = 'text/plain'
+
+            # Send the HTTP response and close the connection
+            conn.send(f'HTTP/1.0 {status_code} OK\r\n') # Use status_code
+            conn.send(f'Content-type: {content_type}\r\n')
+            conn.send('Connection: close\r\n\r\n') # Close connection after response
+            # Ensure response is encoded
+            if isinstance(response, str):
+                 conn.sendall(response.encode('utf-8'))
+            else:
+                 # Should already be JSON string, but double-check encoding
+                 conn.sendall(str(response).encode('utf-8'))
+
+        except OSError as e:
+            # Handle specific OS errors like timeout or connection reset
+            if e.errno == uerrno.ETIMEDOUT:
+                print("Connection timed out.")
+            elif e.errno == uerrno.ECONNRESET:
+                print("Connection reset by peer.")
+            else:
+                print(f'OSError handling connection: {e}')
+        except Exception as e:
+            # Catch other potential errors during request handling
+            print(f'Error processing request: {e}')
+            # Try to send an error response if connection is still open
+            if conn and status_code == 200: # Only if no other error code was set
+                try:
+                    conn.send('HTTP/1.0 500 Internal Server Error\r\n')
+                    conn.send('Content-type: text/plain\r\n')
+                    conn.send('Connection: close\r\n\r\n')
+                    conn.send('Internal Server Error')
+                except Exception as send_err:
+                    print(f"Could not send error response: {send_err}")
+        finally:
+            # Ensure connection is closed
+            if conn:
+                conn.close()
+                # print("Connection closed.") # Can be verbose
+
+        # Small delay to prevent high CPU usage if accept returns immediately
+        # and log_historical_data doesn't take much time.
+        # time.sleep_ms(10)
+
+if __name__ == "__main__":
+    main()

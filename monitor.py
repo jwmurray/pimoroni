@@ -280,11 +280,11 @@ class SensorMonitor:
                 
             self.timestamps.append(current_time)
             
-            # Extract sensor values
-            self.temperature_data.append(data.get('temperature', 0))
-            self.pressure_data.append(data.get('barometric_pressure', 0))
-            self.humidity_data.append(data.get('humidity', 0))
-            self.altitude_data.append(data.get('altitude', 0))
+            # Extract sensor values - updated to match new JSON format
+            self.temperature_data.append(data.get('temperature_f', 0))
+            self.pressure_data.append(data.get('pressure_pa', 0))
+            self.humidity_data.append(data.get('humidity_percent', 0))
+            self.altitude_data.append(data.get('altitude_ft', 0))
             
             # Update the data ranges and y-axis limits/ticks/labels
             self.update_data_ranges()
