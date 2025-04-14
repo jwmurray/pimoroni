@@ -6,8 +6,9 @@ import socket
 import time
 import random
 import json
-from machine import Pin, RTC
+from machine import Pin, RTC, I2C
 import qwiic_bme280
+import qwiic_oled_display
 import uerrno # For non-blocking socket errors
 import sys
 
@@ -18,29 +19,117 @@ SAVE_INTERVAL_S = 5  # Save data every 5 seconds
 SAVE_TO_FLASH_INTERVAL_S = 900 # Save RAM history to flash every 15 minutes (900 seconds)
 HISTORY_DURATION_S = 86400 # Keep data for 24 hours (in seconds)
 HISTORY_FILENAME = "sensor_history.json"
-
 # --- Global Variables ---
 historical_data = [] # List to store sensor readings as tuples: (timestamp, temp_f, pressure_pa, humidity_pct, altitude_ft)
 last_save_ticks_ms = time.ticks_ms() # Use ticks_ms for interval timing
 last_flash_save_ticks_ms = time.ticks_ms() # Timer for saving to flash
+oled = None # Global OLED display object
+mySensor = None
+
+def bme280_init():
+    global mySensor
+    # Initialize BME280 sensor
+    print("\nInitializing BME280 sensor...")
+    mySensor = qwiic_bme280.QwiicBme280()
+    if not mySensor.connected:
+        print("The Qwiic BME280 device isn't connected to the system. Please check your connection", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        mySensor.begin()
+        print("BME280 Initialized.")
+    except Exception as e:
+        print(f"Error initializing BME280: {e}", file=sys.stderr)
+        sys.exit(1)
+
+def init_oled():
+    """Initialize OLED display"""
+    global oled
+    
+    try:
+        # Initialize I2C for OLED
+        i2c = I2C(0, scl=Pin(5), sda=Pin(4))
+        print("I2C initialized")
+        
+        # Initialize the OLED display
+        oled = qwiic_oled_display.QwiicOledDisplay(i2c)
+        if not oled.begin():
+            print("The Qwiic OLED Display isn't connected to the system. Please check your connection")
+            return False
+            
+        print("OLED display initialized successfully")
+        return True
+    except Exception as e:
+        print(f"Error initializing OLED: {e}")
+        return False
+
+def oled_display_sensor(data_dict):
+    """Display sensor data on the OLED display"""
+    global oled
+    
+    try:
+        if oled is None:
+            print("OLED display not initialized")
+            return
+            
+        # Use original print statement for dynamic data
+        print("Updating OLED display with data:", data_dict)
+        
+        # Clear the display first
+        oled.clear()
+        
+        # Format timestamp
+        timestamp = time.localtime(data_dict["timestamp"])
+        time_str = "{:02d}:{:02d}:{:02d}".format(timestamp[3], timestamp[4], timestamp[5])
+        
+        # Format temperature and humidity with fixed width
+        # Ensure data_dict keys are correct and values are numbers
+        temp_str = "{:.1f}F".format(data_dict["temperature_f"])
+        hum_str = "{:.1f}%".format(data_dict["humidity_percent"])
+        
+        print(f"Displaying: Time={time_str}, Temp={temp_str}, Hum={hum_str}")
+        
+        # Display each line with proper spacing using PIXEL rows
+        oled.print("Time: " + time_str, 0, 0)   # Line 1 starts at pixel row 0
+        oled.print("Temp: " + temp_str, 0, 8)   # Line 2 starts at pixel row 8
+        oled.print("Hum:  " + hum_str, 0, 16)  # Line 3 starts at pixel row 16
+        
+        # Update the display
+        oled.display()
+        # Use original print statement
+        print("OLED display updated")
+    except Exception as e:
+        print(f"Error updating OLED display: {e}")
 
 def _get_current_sensor_tuple():
-    """Reads sensor and returns data as a tuple."""
-    if mySensor.connected:
-        try:
-            # Trigger readings - properties might cache otherwise
-            t = mySensor.temperature_fahrenheit
-            p = mySensor.pressure
-            h = mySensor.humidity
-            a = mySensor.altitude_feet
-            # Return the tuple
-            return (t, p, h, a)
-        except Exception as e:
-            print(f"Error reading sensor: {e}")
-            return (None, None, None, None)
-    else:
-        # Return None or default values if sensor disconnects
-        return (None, None, None, None)
+    """Get current sensor readings as a tuple"""
+    global mySensor
+    
+    try:
+        # Get current timestamp first
+        timestamp = time.time()
+        
+        # Read sensor data - store in variables to ensure correct order
+        temp_f = mySensor.temperature_fahrenheit
+        pressure_pa = mySensor.pressure
+        humidity_pct = mySensor.humidity
+        altitude_ft = mySensor.altitude_feet
+        
+        # Create data dictionary for OLED display
+        data_dict = {
+            "timestamp": timestamp,
+            "temperature_f": temp_f,
+            "humidity_percent": humidity_pct
+        }
+        
+        # Update OLED display
+        oled_display_sensor(data_dict)
+        
+        # Return tuple in correct order
+        return (timestamp, temp_f, pressure_pa, humidity_pct, altitude_ft)
+    except Exception as e:
+        print(f"Error reading sensor: {e}")
+        return None
 
 def save_history_to_flash():
     """Saves the current historical_data list (from RAM) to a JSON file on flash."""
@@ -148,23 +237,30 @@ def log_historical_data():
 
 def main():
     print("\nApi Server for PiMoroni Pico Plus 2w with SparkFun BME280\n")
-    global mySensor, historical_data, last_save_ticks_ms, last_flash_save_ticks_ms
-    mySensor = qwiic_bme280.QwiicBme280()
+    global historical_data, last_save_ticks_ms, last_flash_save_ticks_ms, oled
+    
+    bme280_init()
+    # Initialize OLED
+    if not init_oled():
+        print("Failed to initialize OLED display.")
+    else:
+        # Attempt initial sensor read and display update right after OLED init
+        print("Attempting initial OLED display update...")
+        initial_data_tuple = _get_current_sensor_tuple() # This calls oled_display_sensor
+        if initial_data_tuple is None or not all(v is not None for v in initial_data_tuple):
+            print("Initial sensor read failed, OLED might show default state or previous data.")
+            # Optional: Display a 'Waiting...' message if the initial read fails
+            # try:
+            #     if oled:
+            #         oled.clear()
+            #         oled.print("Waiting...", 0, 8)
+            #         oled.display()
+            # except Exception as e:
+            #     print(f"Error displaying initial waiting message: {e}")
+
     historical_data = []  # Initialize historical data list
     last_save_ticks_ms = time.ticks_ms()  # Initialize save timestamp
     last_flash_save_ticks_ms = time.ticks_ms()  # Initialize flash save timestamp
-
-    if mySensor.connected == False:
-        print("The Qwiic BME280 device isn't connected to the system. Please check your connection", \
-            file=sys.stderr)
-        return
-
-    try:
-        mySensor.begin()
-        print("BME280 Initialized.")
-    except Exception as e:
-        print(f"Error initializing BME280: {e}")
-        return
 
     # Setup the LED pin.
     led = Pin('LEDW', Pin.OUT)
@@ -335,12 +431,13 @@ def main():
                     current_data = _get_current_sensor_tuple()
                     if all(v is not None for v in current_data):
                         # Structure as a dictionary for clarity
+                        # current_data tuple is (timestamp, temp_f, pressure_pa, humidity_pct, altitude_ft)
                         data_dict = {
-                            "timestamp": time.time(), # Add current timestamp
-                            "temperature_f": current_data[0],
-                            "pressure_pa": current_data[1],
-                            "humidity_percent": current_data[2],
-                            "altitude_ft": current_data[3]
+                            "timestamp": current_data[0],      # timestamp
+                            "temperature_f": current_data[1],  # temp_f
+                            "pressure_pa": current_data[2],    # pressure_pa
+                            "humidity_percent": current_data[3], # humidity_pct
+                            "altitude_ft": current_data[4]     # altitude_ft
                         }
                         response = json.dumps(data_dict)
                         content_type = 'application/json'

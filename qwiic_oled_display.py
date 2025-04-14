@@ -89,16 +89,41 @@ _SSD1306_CHARGEPUMP = 0x8D
 _SSD1306_EXTERNALVCC = 0x1
 _SSD1306_SWITCHCAPVCC = 0x2
 
-# Basic 5x8 font (only includes characters we need for "Hello World")
+# Basic 5x8 font (includes all characters needed for sensor display)
 _FONT = {
     'H': [0x7F, 0x08, 0x08, 0x08, 0x7F],
     'e': [0x38, 0x54, 0x54, 0x54, 0x18],
-    'l': [0x00, 0x41, 0x7F, 0x40, 0x00],
+    'l': [0x00, 0x41, 0x7F, 0x40, 0x00], # Lowercase l
+    'L': [0x7F, 0x40, 0x40, 0x40, 0x40], # Uppercase L
     'o': [0x38, 0x44, 0x44, 0x44, 0x38],
     ' ': [0x00, 0x00, 0x00, 0x00, 0x00],
     'W': [0x7F, 0x20, 0x18, 0x20, 0x7F],
     'r': [0x38, 0x04, 0x04, 0x04, 0x08],
-    'd': [0x30, 0x48, 0x48, 0x48, 0x7F]
+    'd': [0x30, 0x48, 0x48, 0x48, 0x7F],
+    'T': [0x01, 0x01, 0x7F, 0x01, 0x01],
+    'm': [0x7C, 0x08, 0x04, 0x08, 0x7C],
+    'n': [0x7C, 0x08, 0x04, 0x04, 0x78], # Lowercase n
+    'p': [0x7F, 0x09, 0x09, 0x09, 0x06],
+    'u': [0x38, 0x40, 0x40, 0x40, 0x78],
+    'i': [0x00, 0x44, 0x7D, 0x40, 0x00],
+    't': [0x04, 0x3F, 0x44, 0x40, 0x20],
+    's': [0x48, 0x54, 0x54, 0x54, 0x24], # Lowercase s
+    'y': [0x0C, 0x50, 0x50, 0x50, 0x3C],
+    'F': [0x7F, 0x09, 0x09, 0x09, 0x01],
+    'C': [0x3E, 0x41, 0x41, 0x41, 0x22],
+    '%': [0x23, 0x13, 0x08, 0x64, 0x62],
+    '.': [0x00, 0x00, 0x60, 0x60, 0x00],
+    ':': [0x00, 0x36, 0x36, 0x00, 0x00],
+    '0': [0x3E, 0x51, 0x49, 0x45, 0x3E],
+    '1': [0x00, 0x42, 0x7F, 0x40, 0x00],
+    '2': [0x42, 0x61, 0x51, 0x49, 0x46],
+    '3': [0x21, 0x41, 0x45, 0x4B, 0x31],
+    '4': [0x18, 0x14, 0x12, 0x7F, 0x10],
+    '5': [0x27, 0x45, 0x45, 0x45, 0x39],
+    '6': [0x3C, 0x4A, 0x49, 0x49, 0x30],
+    '7': [0x01, 0x71, 0x09, 0x05, 0x03],
+    '8': [0x36, 0x49, 0x49, 0x49, 0x36],
+    '9': [0x06, 0x49, 0x49, 0x29, 0x1E]
 }
 
 class QwiicOledDisplay:
@@ -123,7 +148,7 @@ class QwiicOledDisplay:
         self.i2c.writeto(self.address, b'\x00' + bytes([cmd]))
         
     def begin(self):
-        """Initialize the OLED display"""
+        """Initialize the display"""
         try:
             # Turn display off
             self._command(_SSD1306_DISPLAYOFF)
@@ -182,35 +207,50 @@ class QwiicOledDisplay:
             # Turn display on
             self._command(_SSD1306_DISPLAYON)
             
+            # Clear the display
+            self.clear()
+            self.display()
+            print("OLED display initialized and cleared")
             return True
-        except OSError:
+        except Exception as e:
+            print(f"Error initializing OLED: {e}")
             return False
-            
+
     def clear(self):
         """Clear the display buffer"""
         self.buffer = bytearray(self.width * self.pages)
-        
+        print("Display buffer cleared")
+
     def display(self):
-        """Update the display with the contents of the buffer"""
-        # Set column address range
-        self._command(_SSD1306_COLUMNADDR)
-        self._command(0)  # Column start address
-        self._command(self.width - 1)  # Column end address
-        
-        # Set page address range
-        self._command(_SSD1306_PAGEADDR)
-        self._command(0)  # Page start address
-        self._command(self.pages - 1)  # Page end address
-        
-        # Write the buffer
-        for i in range(0, len(self.buffer), 16):
-            self.i2c.writeto(self.address, b'\x40' + self.buffer[i:i+16])
+        """Update the display with the buffer contents"""
+        try:
+            # Set column address range
+            self._command(_SSD1306_COLUMNADDR)
+            self._command(0)              # Column start address
+            self._command(self.width - 1) # Column end address
             
+            # Set page address range
+            self._command(_SSD1306_PAGEADDR)
+            self._command(0)              # Page start address
+            self._command(self.pages - 1) # Page end address
+            
+            # Write the buffer data using writeto_mem
+            # The 0x40 indicates that the following bytes are data for the display RAM
+            for i in range(0, len(self.buffer), 16):
+                chunk = self.buffer[i:i+16]
+                self.i2c.writeto_mem(self.address, 0x40, chunk)
+            
+            print("Display updated with buffer contents using writeto_mem")
+        except Exception as e:
+            print(f"Error updating display: {e}")
+
     def print(self, text, x=0, y=0):
         """Print text to the display buffer"""
+        print(f"Printing text: '{text}' at x={x}, y={y}")
         # Convert y position to page number (each page is 8 pixels tall)
         page = y // 8
         if page >= self.pages:
+            print(f"Warning: Page {page} is out of range (max {self.pages-1})")
             return  # Don't print if page is out of range
             
         # Simple text printing implementation
@@ -226,5 +266,12 @@ class QwiicOledDisplay:
             # Draw each column of the character
             for col in range(5):  # 5 columns per character
                 if x + col < self.width:
-                    # Write the column data to the buffer
-                    self.buffer[page * self.width + x + col] = font_data[col]
+                    # Calculate the buffer index
+                    buffer_index = page * self.width + x + col
+                    if buffer_index < len(self.buffer):
+                        # Write the column data to the buffer
+                        self.buffer[buffer_index] = font_data[col]
+                    else:
+                        print(f"Warning: Buffer index {buffer_index} out of range")
+        else:
+            print(f"Warning: Character '{char}' not in font")
