@@ -1,18 +1,28 @@
 #! /usr/bin/env python3
 
-# Ot use monitor.py on Ubuntu, do the following:
+# Make sure that main.py is running on the pico.  Through thonny or automatically from boot.  
+
+
+# Use this program, monitor.py on Ubuntu, do the following:
 # sudo apt-get install python3-matplotlib
 # sudo apt-get install python3-numpy
 # sudo apt-get install python3-requests
 
+# Install uv and create a virtual environment -- You can do this with pip alone, but life is better if you learn to use uv.
 # curl -LsSf https://astral.sh/uv/install.sh | sh
 # uv sync
-# uv venv
-#  source ./.venv/bin/activate
-# uv pip install -r requirements.txt
-# ./monitor.py
 
-# Then, maake sure that main.py is running on the pico
+# Create the virtual environment and install the dependencies at ./.venv
+# uv venv
+
+# Activate the virtual environment:
+# source ./.venv/bin/activate
+
+# Install the dependencies:
+# uv pip install -r requirements.txt
+
+# Run the program:  (besure to type in the ip address of the pico in place of the default 192.168.0.201 shown below)
+# ./monitor.py --server 192.168.0.201
 
 import argparse
 import time
@@ -58,6 +68,9 @@ class SensorMonitor:
     def __init__(self, server_url, update_interval=5, 
                  time_window_minutes=1440, initial_time_window_minutes=6):
         self.server_url = server_url
+        if not self.server_url.startswith('http'):  # If the user did not use a http:// or https://, prepend http://
+            self.server_url = 'http://' + self.server_url
+
         self.update_interval = update_interval # seconds
         self.max_time_window_minutes = time_window_minutes
         self.max_time_window_seconds = time_window_minutes * 60
