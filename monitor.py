@@ -1,5 +1,19 @@
 #! /usr/bin/env python3
 
+# Ot use monitor.py on Ubuntu, do the following:
+# sudo apt-get install python3-matplotlib
+# sudo apt-get install python3-numpy
+# sudo apt-get install python3-requests
+
+# curl -LsSf https://astral.sh/uv/install.sh | sh
+# uv sync
+# uv venv
+#  source ./.venv/bin/activate
+# uv pip install -r requirements.txt
+# ./monitor.py
+
+# Then, maake sure that main.py is running on the pico
+
 import argparse
 import time
 import json
