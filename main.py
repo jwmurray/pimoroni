@@ -63,8 +63,8 @@ def init_oled():
         print(f"Error initializing OLED: {e}")
         return False
 
-def oled_display_sensor(data_dict):
-    """Display sensor data on the OLED display"""
+def oled_display_sensor(data_dict, ip_addr=None):
+    """Display sensor data and IP address on the OLED display"""
     global oled
     
     try:
@@ -73,7 +73,7 @@ def oled_display_sensor(data_dict):
             return
             
         # Use original print statement for dynamic data
-        print("Updating OLED display with data:", data_dict)
+        print("Updating OLED display with data:", data_dict, "IP:", ip_addr) # Debug print
         
         # Clear the display first
         oled.clear()
@@ -87,22 +87,24 @@ def oled_display_sensor(data_dict):
         temp_str = "{:.1f}F".format(data_dict["temperature_f"])
         hum_str = "{:.1f}%".format(data_dict["humidity_percent"])
         
-        print(f"Displaying: Time={time_str}, Temp={temp_str}, Hum={hum_str}")
+        print(f"Displaying: Time={time_str}, Temp={temp_str}, Hum={hum_str}, IP={ip_addr}") # Debug print
         
         # Display each line with proper spacing using PIXEL rows
         oled.print("Time: " + time_str, 0, 0)   # Line 1 starts at pixel row 0
         oled.print("Temp: " + temp_str, 0, 8)   # Line 2 starts at pixel row 8
         oled.print("Hum:  " + hum_str, 0, 16)  # Line 3 starts at pixel row 16
+        if ip_addr:
+            oled.print(ip_addr, 0, 24)       # Line 4 starts at pixel row 24
         
         # Update the display
         oled.display()
         # Use original print statement
-        print("OLED display updated")
+        # print("OLED display updated") # Debug print
     except Exception as e:
         print(f"Error updating OLED display: {e}")
 
-def _get_current_sensor_tuple():
-    """Get current sensor readings as a tuple"""
+def _get_current_sensor_tuple(ip_addr=None):
+    """Get current sensor readings as a tuple and update OLED"""
     global mySensor
     
     try:
@@ -122,8 +124,8 @@ def _get_current_sensor_tuple():
             "humidity_percent": humidity_pct
         }
         
-        # Update OLED display
-        oled_display_sensor(data_dict)
+        # Update OLED display, passing the IP address
+        oled_display_sensor(data_dict, ip_addr)
         
         # Return tuple in correct order
         return (timestamp, temp_f, pressure_pa, humidity_pct, altitude_ft)
@@ -238,15 +240,17 @@ def log_historical_data():
 def main():
     print("\nApi Server for PiMoroni Pico Plus 2w with SparkFun BME280\n")
     global historical_data, last_save_ticks_ms, last_flash_save_ticks_ms, oled
-    
+    ip_address = None # Define ip_address early in main scope
+
     bme280_init()
     # Initialize OLED
     if not init_oled():
         print("Failed to initialize OLED display.")
     else:
         # Attempt initial sensor read and display update right after OLED init
+        # We pass the ip_address here, although it might be None initially
         print("Attempting initial OLED display update...")
-        initial_data_tuple = _get_current_sensor_tuple() # This calls oled_display_sensor
+        initial_data_tuple = _get_current_sensor_tuple(ip_address) # This calls oled_display_sensor
         if initial_data_tuple is None or not all(v is not None for v in initial_data_tuple):
             print("Initial sensor read failed, OLED might show default state or previous data.")
             # Optional: Display a 'Waiting...' message if the initial read fails
@@ -272,7 +276,6 @@ def main():
 
     # Connect to WLAN and setup RTC
     rtc = RTC()
-    ip_address = None  # Initialize ip_address to None
     network_info = None  # Initialize network_info to None
     addr = None  # Initialize addr to None
     s = None  # Initialize socket to None
@@ -311,6 +314,11 @@ def main():
             print("NTP module not available. RTC not synced.")
         except OSError as e:
             print(f"Could not sync RTC with NTP: {e}")
+
+        # After connecting and getting IP, update OLED again if possible
+        if oled and ip_address:
+             print(f"Updating OLED with IP: {ip_address}")
+             _get_current_sensor_tuple(ip_address)
 
     # Load existing history from Flash
     load_history_from_flash()
@@ -412,14 +420,14 @@ def main():
                     print("LED on")
                     led.value(1)
                     state = "ON"
-                    # Generate HTML response
-                    response = webpage(_get_current_sensor_tuple(), state)
+                    # Generate HTML response, pass IP to update OLED
+                    response = webpage(_get_current_sensor_tuple(ip_address), state)
                 elif path == '/lightoff' or path == '/lightoff?':
                     led.value(0)
                     state = 'OFF'
                     print("LED off")
-                    # Generate HTML response
-                    response = webpage(_get_current_sensor_tuple(), state)
+                    # Generate HTML response, pass IP to update OLED
+                    response = webpage(_get_current_sensor_tuple(ip_address), state)
                 # --- New Endpoint Logic ---
                 elif path == '/sensor?all=true':
                      print(f"Historical data requested. Sending {len(historical_data)} points.")
@@ -428,7 +436,7 @@ def main():
                      content_type = 'application/json'
                 elif path == '/sensor' or path == '/sensor?':
                     print("Current sensor data requested.")
-                    current_data = _get_current_sensor_tuple()
+                    current_data = _get_current_sensor_tuple(ip_address)
                     if all(v is not None for v in current_data):
                         # Structure as a dictionary for clarity
                         # current_data tuple is (timestamp, temp_f, pressure_pa, humidity_pct, altitude_ft)
@@ -448,7 +456,8 @@ def main():
                 # --- End New Endpoint Logic ---
                 # Keep the root path handler
                 elif path == '/' or path == '/?':
-                     response = webpage(_get_current_sensor_tuple(), state)
+                     # Pass IP to update OLED
+                     response = webpage(_get_current_sensor_tuple(ip_address), state)
                 # Handle unknown paths
                 else:
                      status_code = 404
